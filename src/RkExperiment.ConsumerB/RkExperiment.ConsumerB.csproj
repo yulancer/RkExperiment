@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <ItemGroup>
+    <ProjectReference Include="..\RkExperiment.Contracts\RkExperiment.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Confluent.Kafka" Version="2.8.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="6.0.1" />
+    <PackageReference Include="Rebus.ServiceProvider" Version="8.4.0" />
+    <PackageReference Include="Rebus.Kafka" Version="5.0.0" />
+    <PackageReference Include="Rebus.Microsoft.Extensions.Logging" Version="3.0.0" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Rebus.Kafka" Version="5.0.0" />
+  </ItemGroup>
+</Project>
