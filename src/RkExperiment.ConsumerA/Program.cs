@@ -1,13 +1,12 @@
-using Confluent.Kafka;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Rebus.Config;
 using Rebus.Handlers;
 using Rebus.Kafka;
-using Rebus.Kafka.Configs;
 using Rebus.ServiceProvider;
 using RkExperiment.Contracts;
+using System.Reflection;
 
 var builder = Host.CreateDefaultBuilder(args)
     .ConfigureServices((context, services) =>
@@ -15,21 +14,8 @@ var builder = Host.CreateDefaultBuilder(args)
         var bootstrapServers = context.Configuration["Kafka:BootstrapServers"] ?? "localhost:9092";
         var inputQueue = context.Configuration["Kafka:InputQueue"] ?? "rk.consumer-a.input";
         var groupId = context.Configuration["Kafka:GroupId"] ?? "rk-consumer-a";
-        var autoCreateTopics = !bool.TryParse(context.Configuration["Kafka:AllowAutoCreateTopics"], out var parsed) || parsed;
 
-        var consumerConfig = new ConsumerAndBehaviorConfig
-        {
-            BootstrapServers = bootstrapServers,
-            GroupId = groupId,
-            AutoOffsetReset = AutoOffsetReset.Earliest,
-            AllowAutoCreateTopics = autoCreateTopics,
-            BehaviorConfig = new ConsumerBehaviorConfig
-            {
-                CommitPeriod = 1
-            }
-        };
-
-        services.AutoRegisterHandlersFromAssemblyOf<DemoEventHandler>();
+        services.AutoRegisterHandlersFromAssemblyOf<UserRegisteredEventHandler>();
         services.AddRebus((configure, provider) => configure
             .Logging(l => l.MicrosoftExtensionsLogging(provider.GetRequiredService<ILoggerFactory>()))
             .Transport(t => t.UseKafka(bootstrapServers, inputQueue, groupId))
@@ -39,17 +25,17 @@ var builder = Host.CreateDefaultBuilder(args)
                 o.SetMaxParallelism(1);
             }));
 
-        services.AddHostedService<SubscriptionStarter>();
+        services.AddHostedService<AutoSubscriptionStarter>();
     });
 
 await builder.RunConsoleAsync();
 
-internal sealed class SubscriptionStarter : BackgroundService
+internal sealed class AutoSubscriptionStarter : BackgroundService
 {
     private readonly Rebus.Bus.IBus _bus;
-    private readonly ILogger<SubscriptionStarter> _logger;
+    private readonly ILogger<AutoSubscriptionStarter> _logger;
 
-    public SubscriptionStarter(Rebus.Bus.IBus bus, ILogger<SubscriptionStarter> logger)
+    public AutoSubscriptionStarter(Rebus.Bus.IBus bus, ILogger<AutoSubscriptionStarter> logger)
     {
         _bus = bus;
         _logger = logger;
@@ -58,27 +44,78 @@ internal sealed class SubscriptionStarter : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Delay(1000, stoppingToken);
-        await _bus.Subscribe<DemoEvent>();
-        _logger.LogInformation("Consumer A subscribed to {MessageType}", nameof(DemoEvent));
+
+        var handledTypes = GetHandledMessageTypes(typeof(UserRegisteredEventHandler).Assembly)
+            .Where(t => t == typeof(UserRegisteredEvent) || t == typeof(OrderSubmittedEvent))
+            .OrderBy(t => t.Name)
+            .ToArray();
+
+        foreach (var messageType in handledTypes)
+        {
+            await SubscribeAsync(messageType);
+            _logger.LogInformation("Consumer A subscribed to {MessageType}", messageType.Name);
+        }
+
         await Task.Delay(Timeout.Infinite, stoppingToken);
     }
+
+    private Task SubscribeAsync(Type messageType)
+    {
+        var method = typeof(Rebus.Bus.IBus)
+            .GetMethods()
+            .Single(m => m.Name == nameof(Rebus.Bus.IBus.Subscribe) && m.IsGenericMethodDefinition && m.GetParameters().Length == 0);
+
+        return (Task)method.MakeGenericMethod(messageType).Invoke(_bus, Array.Empty<object>())!;
+    }
+
+    private static IReadOnlyCollection<Type> GetHandledMessageTypes(Assembly assembly) =>
+        assembly.GetTypes()
+            .Where(t => !t.IsAbstract && !t.IsInterface)
+            .SelectMany(t => t.GetInterfaces())
+            .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IHandleMessages<>))
+            .Select(i => i.GetGenericArguments()[0])
+            .Distinct()
+            .ToArray();
 }
 
-internal sealed class DemoEventHandler : IHandleMessages<DemoEvent>
+internal sealed class UserRegisteredEventHandler : IHandleMessages<UserRegisteredEvent>
 {
-    private readonly ILogger<DemoEventHandler> _logger;
+    private readonly ILogger<UserRegisteredEventHandler> _logger;
     private readonly IConfiguration _configuration;
 
-    public DemoEventHandler(ILogger<DemoEventHandler> logger, IConfiguration configuration)
+    public UserRegisteredEventHandler(ILogger<UserRegisteredEventHandler> logger, IConfiguration configuration)
     {
         _logger = logger;
         _configuration = configuration;
     }
 
-    public Task Handle(DemoEvent message)
+    public Task Handle(UserRegisteredEvent message)
     {
         var instance = _configuration["Service:InstanceName"] ?? "consumer-a-1";
-        _logger.LogInformation("A handled event seq={Sequence}, eventId={EventId}, instance={Instance}", message.Sequence, message.EventId, instance);
+        _logger.LogInformation(
+            "A handled {MessageType} batch={Batch}, eventId={EventId}, userId={UserId}, instance={Instance}",
+            nameof(UserRegisteredEvent), message.Batch, message.EventId, message.UserId, instance);
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class OrderSubmittedEventHandler : IHandleMessages<OrderSubmittedEvent>
+{
+    private readonly ILogger<OrderSubmittedEventHandler> _logger;
+    private readonly IConfiguration _configuration;
+
+    public OrderSubmittedEventHandler(ILogger<OrderSubmittedEventHandler> logger, IConfiguration configuration)
+    {
+        _logger = logger;
+        _configuration = configuration;
+    }
+
+    public Task Handle(OrderSubmittedEvent message)
+    {
+        var instance = _configuration["Service:InstanceName"] ?? "consumer-a-1";
+        _logger.LogInformation(
+            "A handled {MessageType} batch={Batch}, eventId={EventId}, orderId={OrderId}, amount={Amount}, instance={Instance}",
+            nameof(OrderSubmittedEvent), message.Batch, message.EventId, message.OrderId, message.Amount, instance);
         return Task.CompletedTask;
     }
 }

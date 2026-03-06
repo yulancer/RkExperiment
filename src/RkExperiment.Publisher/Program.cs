@@ -41,7 +41,7 @@ internal sealed class PublisherWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var count = int.TryParse(_configuration["Publisher:Count"], out var parsedCount) ? parsedCount : 10;
+        var count = int.TryParse(_configuration["Publisher:Count"], out var parsedCount) ? parsedCount : 5;
         var delayMs = int.TryParse(_configuration["Publisher:DelayMs"], out var parsedDelay) ? parsedDelay : 500;
         var sourceService = _configuration["Publisher:SourceService"] ?? "publisher";
 
@@ -50,25 +50,50 @@ internal sealed class PublisherWorker : BackgroundService
         await using var scope = _serviceProvider.CreateAsyncScope();
         var bus = scope.ServiceProvider.GetRequiredService<Rebus.Bus.IBus>();
 
-        for (var i = 1; i <= count && !stoppingToken.IsCancellationRequested; i++)
+        for (var batch = 1; batch <= count && !stoppingToken.IsCancellationRequested; batch++)
         {
-            var message = new DemoEvent(
+            var userRegistered = new UserRegisteredEvent(
                 EventId: Guid.NewGuid(),
                 SourceService: sourceService,
-                Sequence: i,
+                Batch: batch,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Payload: $"demo-payload-{i}");
+                UserId: $"user-{batch:000}",
+                Email: $"user{batch:000}@example.test");
 
-            await bus.Publish(message);
-            _logger.LogInformation("Published event {Sequence} ({EventId})", message.Sequence, message.EventId);
+            await bus.Publish(userRegistered);
+            _logger.LogInformation("Published {MessageType} batch={Batch}, eventId={EventId}", nameof(UserRegisteredEvent), batch, userRegistered.EventId);
+            await DelayAsync(delayMs, stoppingToken);
 
-            if (delayMs > 0)
-            {
-                await Task.Delay(delayMs, stoppingToken);
-            }
+            var orderSubmitted = new OrderSubmittedEvent(
+                EventId: Guid.NewGuid(),
+                SourceService: sourceService,
+                Batch: batch,
+                CreatedAt: DateTimeOffset.UtcNow,
+                OrderId: $"order-{batch:000}",
+                Amount: 1000m + batch);
+
+            await bus.Publish(orderSubmitted);
+            _logger.LogInformation("Published {MessageType} batch={Batch}, eventId={EventId}", nameof(OrderSubmittedEvent), batch, orderSubmitted.EventId);
+            await DelayAsync(delayMs, stoppingToken);
+
+            var paymentCaptured = new PaymentCapturedEvent(
+                EventId: Guid.NewGuid(),
+                SourceService: sourceService,
+                Batch: batch,
+                CreatedAt: DateTimeOffset.UtcNow,
+                PaymentId: $"payment-{batch:000}",
+                Amount: 1000m + batch,
+                Currency: "RUB");
+
+            await bus.Publish(paymentCaptured);
+            _logger.LogInformation("Published {MessageType} batch={Batch}, eventId={EventId}", nameof(PaymentCapturedEvent), batch, paymentCaptured.EventId);
+            await DelayAsync(delayMs, stoppingToken);
         }
 
         _logger.LogInformation("Publisher finished. Stopping host.");
         _lifetime.StopApplication();
     }
+
+    private static Task DelayAsync(int delayMs, CancellationToken cancellationToken) =>
+        delayMs > 0 ? Task.Delay(delayMs, cancellationToken) : Task.CompletedTask;
 }
